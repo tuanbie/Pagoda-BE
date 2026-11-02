@@ -3,6 +3,7 @@ import fastifyStatic from '@fastify/static';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { MAX_MESSAGE_BYTES, type ClientMsg } from '@sontu/shared';
 import { config } from './config.ts';
 import { metrics, renderMetrics } from './metrics.ts';
@@ -76,7 +77,7 @@ const connPerIp = new Map<string, number>();
 
 app.server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url ?? '/', 'http://x');
-  if (!url.pathname.endsWith('/ws')) return socket.destroy();
+  if (!url.pathname.endsWith('/ws') && !url.pathname.startsWith('/api/server')) return socket.destroy();
   const origin = req.headers.origin ?? '';
   if (config.allowedOrigins.length && !config.allowedOrigins.includes(origin)) {
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
@@ -158,8 +159,14 @@ function onConnection(ws: WebSocket, ip: string, params: URLSearchParams) {
 }
 
 rooms.start();
-await app.listen({ port: config.port, host: config.host });
-app.log.info({ node: config.nodeId, ws: config.publicWsUrl, cap: config.roomCapacity }, 'Tịnh Tâm Tự node ready');
+// Run directly (`node dist/main.js`) → listen on a port. Imported by a serverless
+// wrapper (Vercel `api/server.js`) → just hand over the ready http.Server.
+const isMain = !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMain) {
+  await app.listen({ port: config.port, host: config.host });
+  app.log.info({ node: config.nodeId, ws: config.publicWsUrl, cap: config.roomCapacity }, 'Tịnh Tâm Tự node ready');
+} else await app.ready();
+export const server = app.server;
 
 // ---------------- graceful shutdown ----------------
 let closing = false;
