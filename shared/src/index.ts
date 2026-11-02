@@ -68,7 +68,8 @@ export type ClientMsg =
   | { t: 'sreq'; i: number }
   /** answer to a seat request addressed to me */
   | { t: 'sans'; ok: boolean }
-  | { t: 'inc' }
+  /** join the incense queue of censer c (0 = courtyard, 1.. = one inside each hall) */
+  | { t: 'inc'; c?: number }
   | { t: 'incx' }
   | { t: 'name'; n: string }
   | { t: 'chat'; m: string; ch?: number }
@@ -91,8 +92,10 @@ export interface WelcomeMsg {
   now: number;
   players: PlayerTuple[];
   seats: [number, number][];
-  inc: IncenseState;
-  sticks: StickTuple[];
+  /** one queue per censer (index = censer) */
+  inc: IncenseState[];
+  /** [censer, slot, lit-at] */
+  sticks: [number, number, number][];
   chat: ChatTuple[];
   dj: DjState;
   tables: TableSnap[];
@@ -110,8 +113,8 @@ export type ServerMsg =
   | { t: 'sreqx' }
   /** result of my own request */
   | { t: 'sres'; i: number; r: SeatAnswer }
-  | { t: 'inc'; s: IncenseState }
-  | { t: 'stk'; s: StickTuple }
+  | { t: 'inc'; c: number; s: IncenseState }
+  | { t: 'stk'; c: number; s: StickTuple }
   | { t: 'nm'; id: number; n: string }
   | { t: 'chat'; c: ChatTuple }
   | { t: 'fx'; k: number; id: number }
@@ -269,6 +272,40 @@ export const TABLES: readonly TableDef[] = (() => {
   for (const dz of [-2.6, 2.6]) kinds.forEach((kind, k) => out.push({ kind, x: g.x + (k - 1) * 5.2, z: g.z + dz }));
   return out;
 })();
+/** Altar height of a hall (statues stand on it; the hall's censer sits at its front edge). */
+export const altarHeight = (h: HallDef) => (h.id === 'main' ? 1.5 : 1.2);
+
+/**
+ * Censers: the big bronze one in the courtyard plus a smaller one on the altar of every hall,
+ * so you can offer incense in whichever hall you are standing in.
+ */
+export interface CenserDef {
+  x: number;
+  z: number;
+  /** where the visitor stands while offering (facing the censer) */
+  stand: { x: number; z: number };
+  /** height of the ash surface (sticks stand on it) */
+  y: number;
+  /** stick spots are scaled by this */
+  scale: number;
+  hall: HallDef['id'] | null;
+}
+export const CENSERS: readonly CenserDef[] = [
+  { x: 0, z: -32, stand: { x: 0, z: -29.6 }, y: 1.24, scale: 1, hall: null },
+  ...HALLS.map((h) => {
+    const back = h.z - h.d / 2;
+    const altarFront = back + 0.4 + (h.altar - 0.8);
+    return {
+      x: h.x,
+      z: altarFront - 0.45,
+      stand: { x: h.x, z: altarFront + 0.75 },
+      y: h.h + altarHeight(h) + 0.3,
+      scale: 0.5,
+      hall: h.id,
+    };
+  }),
+];
+
 export const tableSeat = (t: TableDef, side: Side) => ({ x: t.x, z: t.z + (side === 0 ? 1.05 : -1.05), r: side === 0 ? Math.PI : 0 });
 
 export interface SeatDef {

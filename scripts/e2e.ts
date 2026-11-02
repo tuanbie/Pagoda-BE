@@ -163,10 +163,19 @@ try {
 
   a.send({ t: 'inc' });
   b.send({ t: 'inc' });
-  const inc = await b.wait('inc', (m) => m.s.cur === a.hi.id && m.s.q[0] === b.hi.id);
+  const inc = await b.wait('inc', (m) => m.c === 0 && m.s.cur === a.hi.id && m.s.q[0] === b.hi.id);
   check('incense queue: A at censer, B waiting', !!inc);
   a.send({ t: 'incx' });
-  check('leaving queue promotes next', !!(await b.wait('inc', (m) => m.s.cur === b.hi.id)));
+  check('leaving queue promotes next', !!(await b.wait('inc', (m) => m.c === 0 && m.s.cur === b.hi.id)));
+  // every hall has its own censer and queue
+  check('welcome lists one queue per censer (6)', a.hi.inc.length === 6);
+  a.send({ t: 'inc', c: 3 });
+  check('a hall censer has its own queue', !!(await b.wait('inc', (m) => m.c === 3 && m.s.cur === a.hi.id)));
+  b.send({ t: 'inc', c: 3 });
+  check('joining another censer leaves the first queue', !!(await a.wait('inc', (m) => m.c === 0 && m.s.cur === null)));
+  a.send({ t: 'incx' });
+  b.send({ t: 'incx' });
+  await sleep(100);
 
   b.send({ t: 'ping', c: 123 });
   check('ping/pong', !!(await b.wait('pong', (m) => m.c === 123 && m.s > 0)));

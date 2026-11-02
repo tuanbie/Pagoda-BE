@@ -6,6 +6,7 @@ import {
   INCENSE_WALK_MS,
   SEATS,
   SEAT_REQUEST_MS,
+  CENSERS,
   FISH_MAX,
   type FishTuple,
   TABLES,
@@ -25,7 +26,6 @@ import {
   type Pose,
   type SeatAnswer,
   type ServerMsg,
-  type StickTuple,
   type WelcomeMsg,
   PROTOCOL_VERSION,
 } from '@sontu/shared';
@@ -76,11 +76,8 @@ export class Room {
   readonly seats: (number | null)[] = SEATS.map(() => null);
   private joins: PlayerTuple[] = [];
   private leaves: number[] = [];
-  private incQueue: number[] = [];
-  private incCur: number | null = null;
-  private incPhase: 0 | 1 = 0;
-  private incUntil = 0;
-  private sticks = new Map<number, number>();
+  /** one queue + stick tray per censer */
+  private censers = CENSERS.map(() => ({ q: [] as number[], cur: null as number | null, ph: 0 as 0 | 1, until: 0, sticks: new Map<number, number>() }));
   private chatLog: ChatTuple[] = [];
   /** keyed by seat owner — an owner answers one request at a time */
   private requests = new Map<number, SeatRequest>();
@@ -114,7 +111,7 @@ export class Room {
       now,
       players: [...this.players.values()].map((q) => this.tuple(q)),
       seats: this.seats.flatMap((id, i) => (id === null ? [] : [[i, id] as [number, number]])),
-      inc: this.incState(),
+      inc: this.censers.map((_, c) => this.incState(c)),
       sticks: this.liveSticks(now),
       chat: this.chatLog,
       dj: this.dj,
@@ -342,63 +339,79 @@ export class Room {
       }
   }
 
-  // ---------- incense queue (server-authoritative, one person at the censer) ----------
-  incJoin(id: number, now: number) {
-    if (this.incCur === id || this.incQueue.includes(id)) return;
-    this.incQueue.push(id);
-    if (this.incCur === null) this.incAdvance(now);
-    else this.broadcast({ t: 'inc', s: this.incState() });
+  // ---------- incense (server-authoritative: one person at a time per censer) ----------
+  incJoin(id: number, c: number, now: number) {
+    const k = this.censers[c];
+    if (!k || k.cur === id || k.q.includes(id)) return;
+    // you can only queue at one censer at a time
+    this.censers.forEach((other, oc) => {
+      if (oc !== c && (other.cur === id || other.q.includes(id))) this.incLeaveAt(oc, id, now);
+    });
+    k.q.push(id);
+    if (k.cur === null) this.incAdvance(c, now);
+    else this.broadcast({ t: 'inc', c, s: this.incState(c) });
   }
 
   incLeave(id: number, now: number) {
-    if (this.incCur === id) this.incAdvance(now);
-    else if (this.incQueue.includes(id)) {
-      this.incQueue = this.incQueue.filter((q) => q !== id);
-      this.broadcast({ t: 'inc', s: this.incState() });
+    this.censers.forEach((_, c) => this.incLeaveAt(c, id, now));
+  }
+
+  private incLeaveAt(c: number, id: number, now: number) {
+    const k = this.censers[c];
+    if (k.cur === id) this.incAdvance(c, now);
+    else if (k.q.includes(id)) {
+      k.q = k.q.filter((q) => q !== id);
+      this.broadcast({ t: 'inc', c, s: this.incState(c) });
     }
   }
 
-  private incAdvance(now: number) {
-    this.incCur = this.incQueue.shift() ?? null;
-    this.incPhase = 0;
-    this.incUntil = this.incCur === null ? 0 : now + INCENSE_WALK_MS;
-    this.broadcast({ t: 'inc', s: this.incState() });
+  private incAdvance(c: number, now: number) {
+    const k = this.censers[c];
+    k.cur = k.q.shift() ?? null;
+    k.ph = 0;
+    k.until = k.cur === null ? 0 : now + INCENSE_WALK_MS;
+    this.broadcast({ t: 'inc', c, s: this.incState(c) });
   }
 
   private incTick(now: number) {
-    if (this.incCur === null || now < this.incUntil) return;
-    if (this.incPhase === 0) {
-      this.incPhase = 1;
-      this.incUntil = now + INCENSE_OFFER_MS;
-      this.broadcast({ t: 'inc', s: this.incState() });
-      return;
-    }
-    // offering finished -> plant a stick in the free (or oldest) slot
-    let slot = -1;
-    let oldest = Infinity;
-    for (let i = 0; i < INCENSE_SLOTS; i++) {
-      const at = this.sticks.get(i);
-      if (at === undefined || now - at > INCENSE_BURN_MS) {
-        slot = i;
-        break;
+    this.censers.forEach((k, c) => {
+      if (k.cur === null || now < k.until) return;
+      if (k.ph === 0) {
+        k.ph = 1;
+        k.until = now + INCENSE_OFFER_MS;
+        this.broadcast({ t: 'inc', c, s: this.incState(c) });
+        return;
       }
-      if (at < oldest) {
-        oldest = at;
-        slot = i;
+      // offering finished -> plant a stick in a free (or the oldest) spot; spots never overlap
+      let slot = -1;
+      let oldest = Infinity;
+      for (let i = 0; i < INCENSE_SLOTS; i++) {
+        const at = k.sticks.get(i);
+        if (at === undefined || now - at > INCENSE_BURN_MS) {
+          slot = i;
+          break;
+        }
+        if (at < oldest) {
+          oldest = at;
+          slot = i;
+        }
       }
-    }
-    this.sticks.set(slot, now);
-    this.broadcast({ t: 'stk', s: [slot, now] });
-    this.incAdvance(now);
+      k.sticks.set(slot, now);
+      this.broadcast({ t: 'stk', c, s: [slot, now] });
+      this.incAdvance(c, now);
+    });
   }
 
-  private incState(): IncenseState {
-    return { cur: this.incCur, ph: this.incPhase, until: this.incUntil, q: [...this.incQueue] };
+  private incState(c: number): IncenseState {
+    const k = this.censers[c];
+    return { cur: k.cur, ph: k.ph, until: k.until, q: [...k.q] };
   }
 
-  private liveSticks(now: number): StickTuple[] {
-    const out: StickTuple[] = [];
-    for (const [slot, at] of this.sticks) if (now - at < INCENSE_BURN_MS) out.push([slot, at]);
+  private liveSticks(now: number): [number, number, number][] {
+    const out: [number, number, number][] = [];
+    this.censers.forEach((k, c) => {
+      for (const [slot, at] of k.sticks) if (now - at < INCENSE_BURN_MS) out.push([c, slot, at]);
+    });
     return out;
   }
 

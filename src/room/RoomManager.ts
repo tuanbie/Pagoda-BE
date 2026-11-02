@@ -226,9 +226,12 @@ export class RoomManager {
       case 'dj':
         room.djRequest(p, msg.s);
         return true;
-      case 'inc':
-        room.incJoin(p.id, Date.now());
+      case 'inc': {
+        const c = msg.c ?? 0;
+        if (!Number.isInteger(c)) return false;
+        room.incJoin(p.id, c, Date.now());
         return true;
+      }
       case 'incx':
         room.incLeave(p.id, Date.now());
         return true;
