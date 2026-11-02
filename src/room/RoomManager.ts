@@ -35,7 +35,30 @@ const EMPTY_ROOM_TTL_MS = 60_000;
 /** A room counts as "crowded" above this ratio and the node opens a new one. */
 const ELASTIC_RATIO = 0.9;
 
+/**
+ * Client-side hints used when the server has no session for the visitor (e.g. after a
+ * Vercel instance recycle or a node restart): keep the same spot and anonymous name.
+ */
+export interface JoinHint {
+  x?: number;
+  z?: number;
+  adj?: number;
+  noun?: number;
+  tint?: number;
+}
+
+const intIn = (v: number | undefined, max: number) => (v !== undefined && Number.isInteger(v) && v >= 0 && v < max ? v : undefined);
+
 export type JoinResult = { ok: true; room: Room; player: Player } | { ok: false; room: string };
+
+function spawnAt(s: Session | undefined, hint: JoinHint) {
+  if (s) return { x: s.x, z: s.z };
+  if (Number.isFinite(hint.x) && Number.isFinite(hint.z)) {
+    const [x, z] = clampToWorld(hint.x!, hint.z!);
+    return { x: round2(x), z: round2(z) };
+  }
+  return { x: round2(WORLD.spawn.x + (Math.random() - 0.5) * 4), z: round2(WORLD.spawn.z + Math.random() * 2) };
+}
 
 export class RoomManager {
   readonly rooms = new Map<string, Room>();
@@ -96,7 +119,7 @@ export class RoomManager {
       .sort((a, b) => a.num - b.num);
   }
 
-  join(conn: Conn, roomId: string | null, token: string | null, name = ''): JoinResult {
+  join(conn: Conn, roomId: string | null, token: string | null, name = '', hint: JoinHint = {}): JoinResult {
     let room = roomId ? this.rooms.get(roomId) ?? null : null;
     if (room?.full) return { ok: false, room: room.id };
     room ??= this.pickRoom();
@@ -111,11 +134,10 @@ export class RoomManager {
       token: s ? token! : randomBytes(12).toString('base64url'),
       conn,
       name: cleanText(name, MAX_NAME_CHARS) || s?.name || '',
-      adj: s?.adj ?? Math.floor(Math.random() * NAME_ADJ_COUNT),
-      noun: s?.noun ?? Math.floor(Math.random() * NAME_NOUN_COUNT),
-      tint: s?.tint ?? Math.floor(Math.random() * TINT_COUNT),
-      x: s?.x ?? round2(WORLD.spawn.x + (Math.random() - 0.5) * 4),
-      z: s?.z ?? round2(WORLD.spawn.z + Math.random() * 2),
+      adj: s?.adj ?? intIn(hint.adj, NAME_ADJ_COUNT) ?? Math.floor(Math.random() * NAME_ADJ_COUNT),
+      noun: s?.noun ?? intIn(hint.noun, NAME_NOUN_COUNT) ?? Math.floor(Math.random() * NAME_NOUN_COUNT),
+      tint: s?.tint ?? intIn(hint.tint, TINT_COUNT) ?? Math.floor(Math.random() * TINT_COUNT),
+      ...spawnAt(s, hint),
       r: s?.r ?? Math.PI,
       p: Pose.Idle,
       dirty: false,

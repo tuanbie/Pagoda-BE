@@ -145,6 +145,17 @@ try {
   a.ws.close();
   check('seat freed when holder leaves', !!(await c2.wait('seat', (m) => m.i === 2 && m.id === null)));
 
+  const cors = await fetch(BASE + '/api/rooms', { headers: { origin: 'https://pagoda.example' } });
+  check('CORS header on /api', cors.headers.get('access-control-allow-origin') === '*');
+  const h = await new Bot('?x=12.5&z=-3&a=4&n=7&c=2').ready();
+  const hp = h.hi.players.find((p) => p[0] === h.hi.id)!;
+  check('join hint restores spot + anonymous name', hp[3] === 12.5 && hp[4] === -3 && hp[1] === 4 && hp[2] === 7 && hp[7] === 2, hp);
+  const bad = await new Bot('?x=9999&z=0&a=999').ready();
+  const bp = bad.hi.players.find((p) => p[0] === bad.hi.id)!;
+  check('bad hints are clamped / ignored', bp[3] <= 66 && bp[1] < 12);
+  h.ws.close();
+  bad.ws.close();
+
   const metrics = await (await fetch(BASE + '/metrics')).text();
   check('/metrics exposes prometheus counters', metrics.includes('sontu_players'));
   for (const bot of [c2, d]) bot.ws.close();

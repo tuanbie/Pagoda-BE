@@ -1,13 +1,18 @@
 import { DEFAULT_ROOM_CAPACITY } from '@sontu/shared';
 
+import { randomBytes } from 'node:crypto';
+
 const env = process.env;
+/** Vercel may run several instances of the same function: each needs its own id in the directory. */
+const onVercel = !!env.VERCEL;
 const int = (v: string | undefined, d: number) => (v && !Number.isNaN(+v) ? Math.floor(+v) : d);
 
 export const config = {
   port: int(env.PORT, 8787),
   host: env.HOST ?? '0.0.0.0',
   /** Unique node id when running several instances behind the directory. */
-  nodeId: env.NODE_ID ?? 'n1',
+  nodeId: env.NODE_ID ?? (onVercel ? 'v' + randomBytes(3).toString('hex') : 'n1'),
+  onVercel,
   /** Room numbers shown to users start here (node 2 -> 101, ...). */
   roomNumberBase: int(env.ROOM_NUMBER_BASE, 0),
   /** URL clients use to reach this node's websocket (path or absolute ws(s)://). */

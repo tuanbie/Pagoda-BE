@@ -25,6 +25,22 @@ setInterval(publishDirectory, 1000).unref();
 await publishDirectory();
 
 // ---------------- HTTP ----------------
+// CORS: the frontend may be served from another origin (e.g. a Vercel domain)
+app.addHook('onRequest', async (req, reply) => {
+  const origin = req.headers.origin;
+  if (!origin) return;
+  const allowed = !config.allowedOrigins.length || config.allowedOrigins.includes(origin);
+  if (!allowed) return;
+  reply.header('access-control-allow-origin', config.allowedOrigins.length ? origin : '*');
+  reply.header('vary', 'origin');
+  if (req.method === 'OPTIONS') {
+    reply.header('access-control-allow-methods', 'GET, OPTIONS');
+    reply.header('access-control-allow-headers', 'content-type');
+    reply.header('access-control-max-age', '86400');
+    return reply.code(204).send();
+  }
+});
+
 app.get('/api/health', async () => ({ ok: true, node: config.nodeId, players: rooms.playerCount }));
 
 app.get('/api/rooms', async (_req, reply) => {
@@ -78,7 +94,17 @@ app.server.on('upgrade', (req, socket, head) => {
 function onConnection(ws: WebSocket, ip: string, params: URLSearchParams) {
   metrics.connections++;
   connPerIp.set(ip, (connPerIp.get(ip) ?? 0) + 1);
-  const joined = rooms.join(ws, params.get('room'), params.get('token'), params.get('name') ?? '');
+  const num = (k: string) => {
+    const v = params.get(k);
+    return v === null || v === '' ? undefined : Number(v);
+  };
+  const joined = rooms.join(ws, params.get('room'), params.get('token'), params.get('name') ?? '', {
+    x: num('x'),
+    z: num('z'),
+    adj: num('a'),
+    noun: num('n'),
+    tint: num('c'),
+  });
   const release = () => {
     metrics.connections--;
     const n = (connPerIp.get(ip) ?? 1) - 1;
@@ -133,7 +159,7 @@ function onConnection(ws: WebSocket, ip: string, params: URLSearchParams) {
 
 rooms.start();
 await app.listen({ port: config.port, host: config.host });
-app.log.info({ node: config.nodeId, ws: config.publicWsUrl, cap: config.roomCapacity }, 'Sơn Tự node ready');
+app.log.info({ node: config.nodeId, ws: config.publicWsUrl, cap: config.roomCapacity }, 'Tịnh Tâm Tự node ready');
 
 // ---------------- graceful shutdown ----------------
 let closing = false;
