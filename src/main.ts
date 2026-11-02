@@ -16,17 +16,11 @@ const rooms = new RoomManager();
 let directory: Directory = new MemoryDirectory();
 if (config.redisUrl) {
   const { RedisDirectory } = await import('./directory/RedisDirectory.ts');
-  directory = new RedisDirectory(config.redisUrl, config.nodeId, (msg) => app.log.warn(msg));
-  // never log credentials that may be embedded in the URL
-  app.log.info({ redis: config.redisUrl.replace(/\/\/[^@]*@/, '//***@') }, 'using redis room directory');
+  directory = new RedisDirectory(config.redisUrl, config.nodeId);
+  app.log.info({ redis: config.redisUrl }, 'using redis room directory');
 }
-let lastPublishWarn = 0;
 const publishDirectory = () =>
-  directory.publish(rooms.directory()).catch((err: Error) => {
-    if (Date.now() - lastPublishWarn < 30_000) return;
-    lastPublishWarn = Date.now();
-    app.log.warn({ msg: err.message }, 'directory publish failed (rooms on this node keep working)');
-  });
+  directory.publish(rooms.directory()).catch((err) => app.log.warn({ err }, 'directory publish failed'));
 setInterval(publishDirectory, 1000).unref();
 await publishDirectory();
 
@@ -139,7 +133,7 @@ function onConnection(ws: WebSocket, ip: string, params: URLSearchParams) {
 
 rooms.start();
 await app.listen({ port: config.port, host: config.host });
-app.log.info({ node: config.nodeId, ws: config.publicWsUrl, cap: config.roomCapacity }, 'Tịnh Tâm Tự node ready');
+app.log.info({ node: config.nodeId, ws: config.publicWsUrl, cap: config.roomCapacity }, 'Sơn Tự node ready');
 
 // ---------------- graceful shutdown ----------------
 let closing = false;
