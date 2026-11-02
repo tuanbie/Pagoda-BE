@@ -6,6 +6,14 @@ import {
   INCENSE_WALK_MS,
   SEATS,
   SEAT_REQUEST_MS,
+  FISH_MAX,
+  type FishTuple,
+  TABLES,
+  newGame,
+  applyMove,
+  inPavilion,
+  type TableSnap,
+  type ClientMsg,
   SONGS,
   DJ_QUEUE_MAX,
   songDurationMs,
@@ -48,6 +56,7 @@ export interface Player {
   /** timestamps for cheap per-feature rate limits */
   lastName: number;
   lastRing: number;
+  lastFish: number;
   chatTokens: number;
   chatAt: number;
 }
@@ -77,6 +86,8 @@ export class Room {
   private requests = new Map<number, SeatRequest>();
   emptySince = Date.now();
   private dj: DjState = { s: 0, at: Date.now(), q: [] };
+  private fish: FishTuple[] = [];
+  readonly tables: TableSnap[] = TABLES.map((t, i) => ({ i, p: [null, null], g: newGame(t.kind) }));
 
   constructor(
     readonly id: string,
@@ -107,6 +118,8 @@ export class Room {
       sticks: this.liveSticks(now),
       chat: this.chatLog,
       dj: this.dj,
+      tables: this.tables,
+      fish: this.fish,
     };
     p.conn.send(JSON.stringify(welcome));
   }
@@ -116,6 +129,7 @@ export class Room {
     if (!p) return;
     this.players.delete(id);
     this.dropRequestsOf(id);
+    for (const t of this.tables) if (t.p.includes(id)) this.leaveTable(t, id);
     if (this.dj.q.some(([, by]) => by === id)) {
       this.dj.q = this.dj.q.filter(([, by]) => by !== id);
       this.broadcast({ t: 'dj', d: this.dj });
@@ -144,16 +158,80 @@ export class Room {
     this.broadcast({ t: 'nm', id: p.id, n: name });
   }
 
-  /** Token bucket: bursts of 3 messages, then one every 1.5 s. */
-  chat(p: Player, text: string, now: number) {
+  /** Token bucket: bursts of 3 messages, then one every 1.5 s. Channel 1 = discussion hall only. */
+  chat(p: Player, text: string, ch: number, now: number) {
     p.chatTokens = Math.min(3, p.chatTokens + (now - p.chatAt) / 1500);
     p.chatAt = now;
     if (p.chatTokens < 1 || !text) return;
     p.chatTokens -= 1;
-    const c: ChatTuple = [p.id, p.name, p.adj, p.noun, text, now];
+    if (ch === 1 && inPavilion('talk', p.x, p.z)) {
+      // only people sitting/standing in the discussion hall hear it (not kept in history)
+      const data = JSON.stringify({ t: 'chat', c: [p.id, p.name, p.adj, p.noun, text, now, 1] } satisfies ServerMsg);
+      for (const q of this.players.values()) if (q === p || inPavilion('talk', q.x, q.z)) q.conn.send(data);
+      return;
+    }
+    const c: ChatTuple = [p.id, p.name, p.adj, p.noun, text, now, 0];
     this.chatLog.push(c);
     if (this.chatLog.length > CHAT_HISTORY) this.chatLog.shift();
     this.broadcast({ t: 'chat', c });
+  }
+
+  // ---------- game tables (server validates every move) ----------
+  tableAction(p: Player, msg: Extract<ClientMsg, { t: 'tb' }>) {
+    const t = this.tables[msg.i];
+    if (!t) return;
+    const side = t.p.indexOf(p.id) as -1 | 0 | 1;
+    switch (msg.a) {
+      case 'join': {
+        const want = msg.side === 1 ? 1 : 0;
+        if (t.p[want] !== null) return;
+        for (const other of this.tables) if (other !== t && other.p.includes(p.id)) this.leaveTable(other, p.id);
+        if (side !== -1) t.p[side] = null;
+        t.p[want] = p.id;
+        // a finished game is cleared when a new pair sits down
+        if (t.g.result && t.p[0] !== null && t.p[1] !== null) t.g = newGame(t.g.kind);
+        break;
+      }
+      case 'leave':
+        if (side === -1) return;
+        this.leaveTable(t, p.id);
+        return;
+      case 'move': {
+        if (side === -1 || side !== t.g.turn || t.p[0] === null || t.p[1] === null) return;
+        const next = applyMove(t.g, msg.m);
+        if (!next) return;
+        t.g = next;
+        break;
+      }
+      case 'resign':
+        if (side === -1 || t.g.result || t.g.ply === 0) return;
+        t.g = { ...t.g, result: { w: side === 0 ? 1 : 0, why: 'resign' } };
+        break;
+      case 'reset':
+        if (side === -1 || (!t.g.result && t.g.ply > 0)) return;
+        t.g = newGame(t.g.kind);
+        break;
+    }
+    this.broadcast({ t: 'tb', s: t });
+  }
+
+  private leaveTable(t: TableSnap, id: number) {
+    const side = t.p.indexOf(id);
+    if (side === -1) return;
+    t.p[side] = null;
+    // walking away from a game in progress forfeits it
+    if (!t.g.result && t.g.ply > 0) t.g = { ...t.g, result: { w: side === 0 ? 1 : 0, why: 'left' } };
+    this.broadcast({ t: 'tb', s: t });
+  }
+
+  /** Release a fish into the pond (one every 4 s per person); the pond keeps the newest FISH_MAX. */
+  releaseFish(p: Player, now: number) {
+    if (now - p.lastFish < 4000) return;
+    p.lastFish = now;
+    const f: FishTuple = [Math.floor(Math.random() * 2 ** 31), now];
+    this.fish.push(f);
+    if (this.fish.length > FISH_MAX) this.fish.shift();
+    this.broadcast({ t: 'fish', f, id: p.id });
   }
 
   ring(p: Player, k: number, now: number) {

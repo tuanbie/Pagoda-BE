@@ -10,6 +10,7 @@ import { metrics, renderMetrics } from './metrics.ts';
 import { RoomManager } from './room/RoomManager.ts';
 import { MemoryDirectory, type Directory } from './directory/Directory.ts';
 import { TokenBucket } from './net/TokenBucket.ts';
+import { registerFeedback } from './feedback/feedback.ts';
 
 const app = Fastify({ logger: { level: config.logLevel }, trustProxy: config.trustProxy });
 const rooms = new RoomManager();
@@ -35,12 +36,14 @@ app.addHook('onRequest', async (req, reply) => {
   reply.header('access-control-allow-origin', config.allowedOrigins.length ? origin : '*');
   reply.header('vary', 'origin');
   if (req.method === 'OPTIONS') {
-    reply.header('access-control-allow-methods', 'GET, OPTIONS');
+    reply.header('access-control-allow-methods', 'GET, POST, OPTIONS');
     reply.header('access-control-allow-headers', 'content-type');
     reply.header('access-control-max-age', '86400');
     return reply.code(204).send();
   }
 });
+
+registerFeedback(app);
 
 app.get('/api/health', async () => ({ ok: true, node: config.nodeId, players: rooms.playerCount }));
 

@@ -4,12 +4,12 @@
  */
 import { spawn } from 'node:child_process';
 import { WebSocket } from 'ws';
-import type { ServerMsg, WelcomeMsg } from '@sontu/shared';
+import { pavilion, type ServerMsg, type WelcomeMsg } from '@sontu/shared';
 
 const PORT = 8799;
 const BASE = `http://127.0.0.1:${PORT}`;
 const server = spawn(process.execPath, ['--import', 'tsx', 'src/main.ts'], {
-  env: { ...process.env, PORT: String(PORT), ROOM_CAPACITY: '3', MIN_ROOMS: '1', LOG_LEVEL: 'warn' },
+  env: { ...process.env, PORT: String(PORT), ROOM_CAPACITY: '3', MIN_ROOMS: '1', LOG_LEVEL: 'warn', FEEDBACK_FILE: `/tmp/sontu-e2e-feedback-${process.pid}.jsonl` },
   stdio: 'inherit',
 });
 
@@ -74,7 +74,7 @@ try {
 
   a.send({ t: 'mv', x: 999, z: 0, r: 0, p: 0 });
   const clamp = await b.wait('s', (m) => !!m.u?.some((u) => u[0] === a.hi.id));
-  check('out-of-world position is clamped', !!clamp && clamp.u!.find((u) => u[0] === a.hi.id)![1] <= 66);
+  check('out-of-world position is clamped', !!clamp && clamp.u!.find((u) => u[0] === a.hi.id)![1] <= 130);
 
   a.send({ t: 'seat', i: 2 });
   check('seat broadcast to others', !!(await b.wait('seat', (m) => m.i === 2 && m.id === a.hi.id)));
@@ -103,6 +103,56 @@ try {
   b.send({ t: 'unseat' });
   a.send({ t: 'seat', i: 2 });
   await b.wait('seat', (m) => m.i === 2 && m.id === a.hi.id);
+
+  // ---- people never spawn on top of each other ----
+  {
+    const pa = b.hi.players.find((p) => p[0] === a.hi.id)!;
+    const pb = b.hi.players.find((p) => p[0] === b.hi.id)!;
+    check('new visitors spawn apart (≥ 0.8 m)', Math.hypot(pa[3] - pb[3], pa[4] - pb[4]) >= 0.79, [pa[3], pa[4], pb[3], pb[4]]);
+  }
+
+  // ---- game tables (table 0 = xiangqi) ----
+  check('welcome carries 6 game tables', a.hi.tables.length === 6 && a.hi.tables[0].g.kind === 'xiangqi');
+  a.send({ t: 'tb', a: 'join', i: 0, side: 0 });
+  b.send({ t: 'tb', a: 'join', i: 0, side: 1 });
+  check('both players seated at the table', !!(await a.wait('tb', (m) => m.s.i === 0 && m.s.p[0] === a.hi.id && m.s.p[1] === b.hi.id)));
+  b.send({ t: 'tb', a: 'move', i: 0, m: [19, 46] });
+  a.send({ t: 'tb', a: 'move', i: 0, m: [1, 46] });
+  a.send({ t: 'tb', a: 'move', i: 0, m: [64, 67] });
+  const mv = await b.wait('tb', (m) => m.s.i === 0 && m.s.g.ply > 0);
+  check('only the legal move on your turn is accepted', !!mv && mv.s.g.ply === 1 && JSON.stringify(mv.s.g.last) === '[64,67]', mv?.s.g);
+  b.send({ t: 'tb', a: 'resign', i: 0 });
+  check('resigning ends the game for the other side', !!(await a.wait('tb', (m) => m.s.i === 0 && m.s.g.result?.w === 0 && m.s.g.result.why === 'resign')));
+  a.send({ t: 'tb', a: 'reset', i: 0 });
+  check('new game after the result', !!(await b.wait('tb', (m) => m.s.i === 0 && m.s.g.ply === 0 && !m.s.g.result)));
+  a.send({ t: 'tb', a: 'move', i: 0, m: [64, 67] });
+  await b.wait('tb', (m) => m.s.i === 0 && m.s.g.ply === 1);
+  b.send({ t: 'tb', a: 'leave', i: 0 });
+  check('leaving mid-game forfeits', !!(await a.wait('tb', (m) => m.s.i === 0 && m.s.g.result?.why === 'left' && m.s.g.result.w === 0)));
+  a.send({ t: 'tb', a: 'leave', i: 0 });
+  await sleep(100);
+
+  // ---- discussion hall channel: only people inside hear it ----
+  // (B speaks: A is still rate-limited from the chat-flood test above)
+  const talk = pavilion('talk');
+  b.send({ t: 'mv', x: talk.x, z: talk.z, r: 0, p: 0 });
+  await sleep(150);
+  a.inbox = [];
+  b.inbox = [];
+  b.send({ t: 'chat', m: 'chỉ trong giảng đường', ch: 1 });
+  check('speaker gets their discussion-hall message', !!(await b.wait('chat', (m) => m.c[6] === 1)));
+  check('people outside the hall do not', !(await a.wait('chat', () => true, 300)));
+  b.send({ t: 'mv', x: 3, z: 4, r: 1.5, p: 0 });
+  await sleep(150);
+  a.inbox = [];
+  b.inbox = [];
+
+  check('welcome carries the pond', Array.isArray(a.hi.fish));
+  a.send({ t: 'fish' });
+  a.send({ t: 'fish' });
+  check('released fish is broadcast', !!(await b.wait('fish', (m) => m.id === a.hi.id)));
+  await sleep(150);
+  check('fish release is rate limited', !b.inbox.some((m) => m.t === 'fish'));
 
   check('welcome carries DJ state', typeof a.hi.dj?.s === 'number');
   a.send({ t: 'dj', s: 3 });
@@ -152,9 +202,18 @@ try {
   check('join hint restores spot + anonymous name', hp[3] === 12.5 && hp[4] === -3 && hp[1] === 4 && hp[2] === 7 && hp[7] === 2, hp);
   const bad = await new Bot('?x=9999&z=0&a=999').ready();
   const bp = bad.hi.players.find((p) => p[0] === bad.hi.id)!;
-  check('bad hints are clamped / ignored', bp[3] <= 66 && bp[1] < 12);
+  check('bad hints are clamped / ignored', bp[3] <= 130 && bp[1] < 12);
   h.ws.close();
   bad.ws.close();
+
+  // ---- private feedback ----
+  const post = (body: unknown) => fetch(BASE + '/api/feedback', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  check('feedback is accepted', (await post({ kind: 'idea', message: 'Thêm chức năng nghe pháp thoại\nnhé', name: 'Test', contact: 'a@b.c' })).status === 200);
+  check('empty feedback is rejected', (await post({ kind: 'bug', message: '  ' })).status === 400);
+  const inbox = (await (await fetch(BASE + '/api/feedback')).json()) as { items: { message: string; kind: string }[] };
+  check('feedback inbox readable from localhost (newlines kept)', inbox.items[0]?.message === 'Thêm chức năng nghe pháp thoại\nnhé' && inbox.items[0].kind === 'idea');
+  for (let i = 0; i < 5; i++) await post({ kind: 'other', message: 'spam ' + i });
+  check('feedback is rate limited per IP', (await post({ kind: 'other', message: 'one more' })).status === 429);
 
   const metrics = await (await fetch(BASE + '/metrics')).text();
   check('/metrics exposes prometheus counters', metrics.includes('sontu_players'));

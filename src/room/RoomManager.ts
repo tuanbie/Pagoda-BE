@@ -51,13 +51,26 @@ const intIn = (v: number | undefined, max: number) => (v !== undefined && Number
 
 export type JoinResult = { ok: true; room: Room; player: Player } | { ok: false; room: string };
 
-function spawnAt(s: Session | undefined, hint: JoinHint) {
-  if (s) return { x: s.x, z: s.z };
+/** Pick a spot near the wanted point where nobody is standing (people never overlap). */
+function freeSpot(room: Room, x: number, z: number): { x: number; z: number } {
+  const taken = (cx: number, cz: number) => [...room.players.values()].some((q) => (q.x - cx) ** 2 + (q.z - cz) ** 2 < 0.8 ** 2);
+  if (!taken(x, z)) return { x: round2(x), z: round2(z) };
+  for (let ring = 1; ring <= 8; ring++)
+    for (let k = 0; k < ring * 6; k++) {
+      const a = (k / (ring * 6)) * Math.PI * 2 + ring;
+      const [cx, cz] = clampToWorld(x + Math.cos(a) * ring * 0.9, z + Math.sin(a) * ring * 0.9);
+      if (!taken(cx, cz)) return { x: round2(cx), z: round2(cz) };
+    }
+  return { x: round2(x), z: round2(z) };
+}
+
+function spawnAt(room: Room, s: Session | undefined, hint: JoinHint) {
+  if (s) return freeSpot(room, s.x, s.z);
   if (Number.isFinite(hint.x) && Number.isFinite(hint.z)) {
     const [x, z] = clampToWorld(hint.x!, hint.z!);
-    return { x: round2(x), z: round2(z) };
+    return freeSpot(room, x, z);
   }
-  return { x: round2(WORLD.spawn.x + (Math.random() - 0.5) * 4), z: round2(WORLD.spawn.z + Math.random() * 2) };
+  return freeSpot(room, WORLD.spawn.x + (Math.random() - 0.5) * 4, WORLD.spawn.z + Math.random() * 2);
 }
 
 export class RoomManager {
@@ -137,7 +150,7 @@ export class RoomManager {
       adj: s?.adj ?? intIn(hint.adj, NAME_ADJ_COUNT) ?? Math.floor(Math.random() * NAME_ADJ_COUNT),
       noun: s?.noun ?? intIn(hint.noun, NAME_NOUN_COUNT) ?? Math.floor(Math.random() * NAME_NOUN_COUNT),
       tint: s?.tint ?? intIn(hint.tint, TINT_COUNT) ?? Math.floor(Math.random() * TINT_COUNT),
-      ...spawnAt(s, hint),
+      ...spawnAt(room, s, hint),
       r: s?.r ?? Math.PI,
       p: Pose.Idle,
       dirty: false,
@@ -145,6 +158,7 @@ export class RoomManager {
       needsFull: false,
       lastName: 0,
       lastRing: 0,
+      lastFish: 0,
       chatTokens: 3,
       chatAt: now,
     };
@@ -196,11 +210,18 @@ export class RoomManager {
         room.rename(p, cleanText(msg.n, MAX_NAME_CHARS), Date.now());
         return true;
       case 'chat':
-        room.chat(p, cleanText(msg.m, MAX_CHAT_CHARS), Date.now());
+        room.chat(p, cleanText(msg.m, MAX_CHAT_CHARS), msg.ch === 1 ? 1 : 0, Date.now());
+        return true;
+      case 'tb':
+        if (!Number.isInteger(msg.i) || !['join', 'leave', 'move', 'resign', 'reset'].includes(msg.a)) return false;
+        room.tableAction(p, msg);
         return true;
       case 'ring':
         if (msg.k !== 0 && msg.k !== 1) return false;
         room.ring(p, msg.k, Date.now());
+        return true;
+      case 'fish':
+        room.releaseFish(p, Date.now());
         return true;
       case 'dj':
         room.djRequest(p, msg.s);
