@@ -35,6 +35,11 @@ BOTS=2000 SECONDS=20 npm run load   # load test
 docker compose up --build           # nginx :8080 + 2 nodes + redis
 ```
 
+## Deploy on Render (single container, Redis included)
+1. New → Web Service → this repo → Runtime **Docker**: build context `.`, Dockerfile path `./Dockerfile`, health check `/api/health`.
+2. Environment: leave `REDIS_URL` **unset** to use the embedded Redis. Add `NODE_ID=n1`, `TRUST_PROXY=1`, `LOG_LEVEL=warn` and `ALLOWED_ORIGINS=https://<your-frontend-domain>`.
+3. One service handles roughly 2–3k concurrent visitors. To scale further, create another service (`NODE_ID=n2`, `ROOM_NUMBER_BASE=100`, its own `PUBLIC_WS_URL`) and point **both** at one shared external Redis via `REDIS_URL`. An embedded Redis cannot be shared between services.
+
 ## Configuration (environment variables)
 | Var | Default | Meaning |
 |---|---|---|
@@ -44,7 +49,8 @@ docker compose up --build           # nginx :8080 + 2 nodes + redis
 | `ROOM_NUMBER_BASE` | 0 | Room numbers shown to users (node 2 → 101…) |
 | `ROOM_CAPACITY` | 100 | Maximum people per room |
 | `MIN_ROOMS` / `MAX_ROOMS` | 2 / 50 | Rooms kept warm / hard cap per node |
-| `REDIS_URL` | – | Enables the shared room directory |
+| `REDIS_URL` | – | External Redis for the shared room directory (multi-node). If unset, the Docker image starts an **embedded Redis** inside the container |
+| `EMBEDDED_REDIS` | 1 | Set to 0 to run without any Redis (in-memory directory) |
 | `STATIC_DIR` | – | Serve a built frontend from this folder |
 | `ALLOWED_ORIGINS` | – | Comma-separated WebSocket origin allow-list |
 | `MAX_CONN_PER_IP` | 20 | Concurrent sockets per IP |

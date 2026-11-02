@@ -9,11 +9,20 @@ export class RedisDirectory implements Directory {
   private redis: Redis;
   private cache: { at: number; rooms: RoomInfo[] } = { at: 0, rooms: [] };
 
+  private lastErrorLog = 0;
+
   constructor(
     url: string,
     private nodeId: string,
+    warn: (msg: string) => void = console.warn,
   ) {
     this.redis = new Redis(url, { maxRetriesPerRequest: 2, lazyConnect: false });
+    // ioredis emits 'error' on every retry; log at most every 30 s instead of flooding
+    this.redis.on('error', (err: Error) => {
+      if (Date.now() - this.lastErrorLog < 30_000) return;
+      this.lastErrorLog = Date.now();
+      warn(`redis: ${err.message}`);
+    });
   }
 
   async publish(rooms: RoomInfo[]) {
