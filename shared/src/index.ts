@@ -292,15 +292,16 @@ export interface CenserDef {
 }
 export const CENSERS: readonly CenserDef[] = [
   { x: 0, z: -32, stand: { x: 0, z: -29.6 }, y: 1.24, scale: 1, hall: null },
+  // a floor-standing bronze censer in front of every hall's altar
   ...HALLS.map((h) => {
     const back = h.z - h.d / 2;
     const altarFront = back + 0.4 + (h.altar - 0.8);
     return {
       x: h.x,
-      z: altarFront - 0.45,
-      stand: { x: h.x, z: altarFront + 0.75 },
-      y: h.h + altarHeight(h) + 0.3,
-      scale: 0.5,
+      z: altarFront + 0.55,
+      stand: { x: h.x, z: altarFront + 1.5 },
+      y: h.h + 1.02,
+      scale: 0.62,
       hall: h.id,
     };
   }),
