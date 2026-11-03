@@ -29,7 +29,13 @@ export const config = {
   allowedOrigins: (env.ALLOWED_ORIGINS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
   /** Max simultaneous connections per IP. */
   maxConnPerIp: int(env.MAX_CONN_PER_IP, 20),
-  /** Only trust X-Forwarded-For when running behind our own reverse proxy. */
-  trustProxy: env.TRUST_PROXY === '1',
+  /**
+   * Trust X-Forwarded-For (its last entry) only behind our own reverse proxy. On Vercel every
+   * request arrives through Vercel's proxy, which sets the header itself, so it is trusted by
+   * default there (TRUST_PROXY=0 turns that off). Without it every visitor would share one IP.
+   */
+  trustProxy: env.TRUST_PROXY === '1' || (onVercel && env.TRUST_PROXY !== '0'),
+  /** /metrics is private (localhost or ADMIN_KEY) unless METRICS_PUBLIC=1. */
+  metricsPublic: env.METRICS_PUBLIC === '1',
   logLevel: env.LOG_LEVEL ?? 'info',
 };

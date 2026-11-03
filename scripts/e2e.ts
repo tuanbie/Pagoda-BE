@@ -249,6 +249,11 @@ try {
   const basic = 'Basic ' + Buffer.from(`admin:${ADMIN_KEY}`).toString('base64');
   check('inbox page opens with the key as Basic password', (await fetch(BASE + '/admin/feedback', { headers: { ...remote, authorization: basic } })).status === 200);
   check('a wrong key is refused', (await fetch(BASE + '/api/feedback', { headers: { ...remote, authorization: 'Bearer nope' } })).status === 403);
+  const health = await fetch(BASE + '/api/health');
+  check('security headers on responses', health.headers.get('x-content-type-options') === 'nosniff' && health.headers.get('x-frame-options') === 'DENY' && health.headers.get('referrer-policy') === 'no-referrer');
+  check('inbox page forbids scripts (CSP)', /default-src 'none'/.test((await fetch(BASE + '/admin/feedback', { headers: { ...remote, authorization: basic } })).headers.get('content-security-policy') ?? ''));
+  check('/metrics is private from outside', (await fetch(BASE + '/metrics', { headers: remote })).status === 403);
+  check('/metrics opens with the admin key', (await fetch(BASE + '/metrics', { headers: { ...remote, authorization: `Bearer ${ADMIN_KEY}` } })).status === 200);
   for (let i = 0; i < 5; i++) await post({ kind: 'other', message: 'spam ' + i });
   check('feedback is rate limited per IP', (await post({ kind: 'other', message: 'one more' })).status === 429);
 

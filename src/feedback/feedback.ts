@@ -1,8 +1,9 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import type { FastifyInstance } from 'fastify';
+import { createHash, randomBytes } from 'node:crypto';
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { FEEDBACK_MAX, type FeedbackInput } from '@sontu/shared';
+import { isAdmin } from '../auth.ts';
 
 /**
  * Private feedback for the developer: visitors post what should be improved.
@@ -12,9 +13,7 @@ import { FEEDBACK_MAX, type FeedbackInput } from '@sontu/shared';
  * Entries older than RETENTION_DAYS are deleted. Entries written by older
  * versions (which also stored name, contact and IP) are scrubbed in place.
  *
- * Reading is only allowed from the machine itself (localhost) or with ADMIN_KEY
- * in the Authorization header (Bearer, or Basic with the key as password),
- * never in the URL, so the key does not end up in access logs or browser history.
+ * Reading needs localhost or ADMIN_KEY in the Authorization header (see auth.ts).
  */
 const FILE = process.env.FEEDBACK_FILE ?? 'data/feedback.jsonl';
 const REDIS_KEY = 'sontu:feedback';
@@ -48,7 +47,6 @@ async function store() {
   }
   return redis;
 }
-const ADMIN_KEY = process.env.ADMIN_KEY ?? '';
 const WINDOW_MS = 10 * 60_000;
 const PER_WINDOW = 5;
 /** rate limit, keyed by a salted hash of the IP; memory only, the salt changes on every start */
@@ -65,28 +63,6 @@ function clean(s: unknown, max: number, multiline = false): string {
 }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
-
-/** ADMIN_KEY from `Authorization: Bearer <key>` or `Basic base64(<any user>:<key>)` */
-function keyFrom(req: FastifyRequest): string {
-  const h = req.headers.authorization ?? '';
-  if (/^bearer /i.test(h)) return h.slice(7).trim();
-  if (/^basic /i.test(h)) {
-    const raw = Buffer.from(h.slice(6).trim(), 'base64').toString('utf8');
-    return raw.slice(raw.indexOf(':') + 1);
-  }
-  return '';
-}
-const sameKey = (a: string, b: string) => {
-  const x = Buffer.from(a);
-  const y = Buffer.from(b);
-  return x.length === y.length && timingSafeEqual(x, y);
-};
-
-function canRead(req: FastifyRequest) {
-  const local = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '') && !req.headers['x-forwarded-for'];
-  const key = keyFrom(req);
-  return local || (!!ADMIN_KEY && !!key && sameKey(key, ADMIN_KEY));
-}
 
 const parse = (l: string): Record<string, unknown> | null => {
   try {
@@ -176,14 +152,14 @@ export function registerFeedback(app: FastifyInstance) {
   });
 
   app.get('/api/feedback', async (req, reply) => {
-    if (!canRead(req)) return reply.code(403).send({ ok: false });
+    if (!isAdmin(req)) return reply.code(403).send({ ok: false });
     return { ok: true, items: await readAll() };
   });
 
   // tiny read-only inbox page: http://localhost:8787/admin/feedback
   // elsewhere the browser asks for a password: enter ADMIN_KEY (any user name)
   app.get('/admin/feedback', async (req, reply) => {
-    if (!canRead(req)) return reply.code(401).header('www-authenticate', 'Basic realm="feedback", charset="UTF-8"').type('text/plain').send('unauthorized');
+    if (!isAdmin(req)) return reply.code(401).header('www-authenticate', 'Basic realm="feedback", charset="UTF-8"').type('text/plain').send('unauthorized');
     const items = await readAll();
     const label = { bug: 'Lỗi', idea: 'Đề xuất', other: 'Khác' } as Record<string, string>;
     const rows = items
@@ -191,7 +167,11 @@ export function registerFeedback(app: FastifyInstance) {
         (f) => `<article><header><b>${esc(label[f.kind] ?? f.kind)}</b> · ${esc(new Date(f.at).toLocaleString('vi-VN'))}${f.locale ? ` · ${esc(f.locale)}` : ''}</header><p>${esc(f.message).replace(/\n/g, '<br>')}</p></article>`,
       )
       .join('');
-    reply.type('text/html; charset=utf-8').header('cache-control', 'no-store');
+    reply
+      .type('text/html; charset=utf-8')
+      .header('cache-control', 'no-store')
+      // the page has no scripts: forbid them outright, allow only its own inline style
+      .header('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
     return `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Góp ý · Tịnh Tâm Tự</title>
 <style>body{font-family:system-ui,sans-serif;background:#1f231d;color:#f5f1e6;margin:0;padding:24px 16px}main{max-width:760px;margin:auto}h1{font-weight:600}article{background:#2a2f27;border:1px solid #3b4136;border-radius:14px;padding:12px 16px;margin:10px 0}header{color:#d9b26a;font-size:13px}p{margin:8px 0 0;line-height:1.6}a{color:#9ed8ff}.empty{color:#a9a593}</style></head>
 <body><main><h1>Góp ý từ người dùng (${items.length})</h1>${rows || '<p class="empty">Chưa có góp ý nào.</p>'}</main></body></html>`;

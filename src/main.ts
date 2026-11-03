@@ -11,6 +11,7 @@ import { RoomManager } from './room/RoomManager.ts';
 import { MemoryDirectory, type Directory } from './directory/Directory.ts';
 import { TokenBucket } from './net/TokenBucket.ts';
 import { registerFeedback } from './feedback/feedback.ts';
+import { clientIp, isAdmin } from './auth.ts';
 
 const app = Fastify({
   logger: {
@@ -19,7 +20,12 @@ const app = Fastify({
     // and query strings can carry tokens. Keep only the method and the path.
     serializers: { req: (req: { method?: string; url?: string }) => ({ method: req.method, url: (req.url ?? '').split('?')[0] }) },
   },
-  trustProxy: config.trustProxy,
+  // trust only the proxy we talk to (1 hop): req.ip is then the last X-Forwarded-For entry,
+  // the one our proxy wrote; anything a client put in front of it is ignored
+  trustProxy: config.trustProxy ? (_addr: string, hop: number) => hop < 1 : false,
+  // slow or stalled HTTP requests are cut off (websockets are unaffected once upgraded)
+  requestTimeout: 30_000,
+  bodyLimit: 64 * 1024,
 });
 const rooms = new RoomManager();
 
@@ -43,6 +49,16 @@ setInterval(publishDirectory, 1000).unref();
 await publishDirectory();
 
 // ---------------- HTTP ----------------
+if (!config.allowedOrigins.length && (config.onVercel || process.env.NODE_ENV === 'production'))
+  app.log.warn('ALLOWED_ORIGINS is empty: any website can open websockets to this server. Set it to the frontend origin(s).');
+
+// baseline security headers on every response
+app.addHook('onSend', async (_req, reply) => {
+  reply.header('x-content-type-options', 'nosniff');
+  reply.header('referrer-policy', 'no-referrer');
+  reply.header('x-frame-options', 'DENY');
+});
+
 // CORS: the frontend may be served from another origin (e.g. a Vercel domain)
 app.addHook('onRequest', async (req, reply) => {
   const origin = req.headers.origin;
@@ -71,10 +87,17 @@ app.get('/api/rooms', async (_req, reply) => {
   return { rooms: [...local, ...others].sort((a, b) => a.num - b.num), node: config.nodeId };
 });
 
-app.get('/metrics', async (_req, reply) => {
+app.get('/metrics', async (req, reply) => {
+  if (!config.metricsPublic && !isAdmin(req)) return reply.code(403).send();
   reply.type('text/plain');
   return renderMetrics({ players: rooms.playerCount, rooms: rooms.rooms.size });
 });
+
+/** Same policy as the frontend's vercel.json: no inline or third-party scripts, no framing. */
+const FRONTEND_CSP =
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; " +
+  "connect-src 'self' https: wss:; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; " +
+  "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
 
 if (config.staticDir && existsSync(config.staticDir)) {
   await app.register(fastifyStatic, {
@@ -82,9 +105,12 @@ if (config.staticDir && existsSync(config.staticDir)) {
     cacheControl: false,
     setHeaders(res, path) {
       // hashed assets are immutable; html must revalidate
-      if (/[\\/]assets[\\/]/.test(path)) res.setHeader('cache-control', 'public, max-age=31536000, immutable');
-      else if (path.endsWith('.html')) res.setHeader('cache-control', 'no-cache');
-      else res.setHeader('cache-control', 'public, max-age=3600');
+      if (/[\\/]assets[\\/]/.test(path)) res.header('cache-control', 'public, max-age=31536000, immutable');
+      else if (path.endsWith('.html')) {
+        res.header('cache-control', 'no-cache');
+        res.header('content-security-policy', FRONTEND_CSP);
+      }
+      else res.header('cache-control', 'public, max-age=3600');
     },
   });
   app.setNotFoundHandler((req, reply) => (req.url.startsWith('/api') ? reply.code(404).send() : reply.sendFile('index.html')));
@@ -102,8 +128,7 @@ app.server.on('upgrade', (req, socket, head) => {
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
     return socket.destroy();
   }
-  const fwd = config.trustProxy ? (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0].trim() : undefined;
-  const ip = fwd || req.socket.remoteAddress || '?';
+  const ip = clientIp(req.headers['x-forwarded-for'], req.socket.remoteAddress);
   if ((connPerIp.get(ip) ?? 0) >= config.maxConnPerIp) {
     socket.write('HTTP/1.1 429 Too Many Requests\r\n\r\n');
     return socket.destroy();
