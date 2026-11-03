@@ -6,7 +6,9 @@
  */
 
 export * from './games.ts';
+export * from './church.ts';
 import type { GameKind, GameState, Move, Side } from './games.ts';
+import { CHURCH, CHURCH_CANDLES, CHURCH_SEATS, CHURCH_TABLES, type Place } from './church.ts';
 
 export const PROTOCOL_VERSION = 3;
 export const TICK_HZ = 10;
@@ -151,6 +153,8 @@ export interface RoomInfo {
   /** websocket URL (absolute or path) to reach the node hosting this room */
   url: string;
   node: string;
+  /** which world the room is in (missing = temple, from older nodes) */
+  place?: Place;
 }
 
 /** Strip control / bidi-override characters, collapse whitespace, cap length (by code points). */
@@ -316,7 +320,7 @@ export interface SeatDef {
   /** facing (rotation around Y; 0 = facing +z) */
   r: number;
   /** what the seat belongs to, for UI */
-  area: HallDef['id'] | 'bodhi' | 'tea' | 'talk';
+  area: HallDef['id'] | 'bodhi' | 'tea' | 'talk' | 'nave' | 'cloister';
 }
 
 /** Cushions in every hall, Bodhi stones, tea house and discussion hall. */
@@ -478,6 +482,25 @@ export function clampToWorld(x: number, z: number): [number, number] {
     return [x * k, z * k];
   }
   return [x, z];
+}
+
+/** Everything the server needs to know about a place's layout. */
+export interface PlaceDef {
+  seats: readonly SeatDef[];
+  censers: readonly CenserDef[];
+  tables: readonly TableDef[];
+  spawn: { readonly x: number; readonly z: number };
+  radius: number;
+}
+export function placeDef(p: Place): PlaceDef {
+  return p === 'church'
+    ? { seats: CHURCH_SEATS, censers: CHURCH_CANDLES, tables: CHURCH_TABLES, spawn: CHURCH.spawn, radius: CHURCH.radius }
+    : { seats: SEATS, censers: CENSERS, tables: TABLES, spawn: WORLD.spawn, radius: WORLD.radius };
+}
+export function clampToPlace(p: Place, x: number, z: number): [number, number] {
+  const r = placeDef(p).radius;
+  const d = Math.hypot(x, z);
+  return d > r ? [(x * r) / d, (z * r) / d] : [x, z];
 }
 
 export const round2 = (n: number) => Math.round(n * 100) / 100;

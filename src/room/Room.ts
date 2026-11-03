@@ -4,12 +4,9 @@ import {
   INCENSE_OFFER_MS,
   INCENSE_SLOTS,
   INCENSE_WALK_MS,
-  SEATS,
   SEAT_REQUEST_MS,
-  CENSERS,
   FISH_MAX,
   type FishTuple,
-  TABLES,
   newGame,
   applyMove,
   inPavilion,
@@ -28,6 +25,8 @@ import {
   type ServerMsg,
   type WelcomeMsg,
   PROTOCOL_VERSION,
+  placeDef,
+  type Place,
 } from '@sontu/shared';
 
 /** Minimal transport surface so rooms are testable without real sockets. */
@@ -73,24 +72,31 @@ const BACKPRESSURE_BYTES = 256 * 1024;
 
 export class Room {
   readonly players = new Map<number, Player>();
-  readonly seats: (number | null)[] = SEATS.map(() => null);
+  readonly seats: (number | null)[];
   private joins: PlayerTuple[] = [];
   private leaves: number[] = [];
   /** one queue + stick tray per censer */
-  private censers = CENSERS.map(() => ({ q: [] as number[], cur: null as number | null, ph: 0 as 0 | 1, until: 0, sticks: new Map<number, number>() }));
+  private censers: { q: number[]; cur: number | null; ph: 0 | 1; until: number; sticks: Map<number, number> }[];
   private chatLog: ChatTuple[] = [];
   /** keyed by seat owner — an owner answers one request at a time */
   private requests = new Map<number, SeatRequest>();
   emptySince = Date.now();
   private dj: DjState = { s: 0, at: Date.now(), q: [] };
   private fish: FishTuple[] = [];
-  readonly tables: TableSnap[] = TABLES.map((t, i) => ({ i, p: [null, null], g: newGame(t.kind) }));
+  readonly tables: TableSnap[];
 
   constructor(
     readonly id: string,
     readonly num: number,
     readonly cap: number,
-  ) {}
+    readonly place: Place = 'pagoda',
+  ) {
+    // seats, candle stands / censers and game tables come from this place's layout
+    const def = placeDef(place);
+    this.seats = def.seats.map(() => null);
+    this.censers = def.censers.map(() => ({ q: [], cur: null, ph: 0, until: 0, sticks: new Map<number, number>() }));
+    this.tables = def.tables.map((t, i) => ({ i, p: [null, null], g: newGame(t.kind) }));
+  }
 
   get count() {
     return this.players.size;
@@ -161,7 +167,7 @@ export class Room {
     p.chatAt = now;
     if (p.chatTokens < 1 || !text) return;
     p.chatTokens -= 1;
-    if (ch === 1 && inPavilion('talk', p.x, p.z)) {
+    if (ch === 1 && this.place === 'pagoda' && inPavilion('talk', p.x, p.z)) {
       // only people sitting/standing in the discussion hall hear it (not kept in history)
       const data = JSON.stringify({ t: 'chat', c: [p.id, p.name, p.adj, p.noun, text, now, 1] } satisfies ServerMsg);
       for (const q of this.players.values()) if (q === p || inPavilion('talk', q.x, q.z)) q.conn.send(data);

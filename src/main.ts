@@ -4,7 +4,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { MAX_MESSAGE_BYTES, type ClientMsg } from '@sontu/shared';
+import { MAX_MESSAGE_BYTES, isPlace, type ClientMsg, type Place } from '@sontu/shared';
 import { config } from './config.ts';
 import { metrics, renderMetrics } from './metrics.ts';
 import { RoomManager } from './room/RoomManager.ts';
@@ -79,12 +79,15 @@ registerFeedback(app);
 
 app.get('/api/health', async () => ({ ok: true, node: config.nodeId, players: rooms.playerCount }));
 
-app.get('/api/rooms', async (_req, reply) => {
+app.get<{ Querystring: { place?: string } }>('/api/rooms', async (req, reply) => {
   reply.header('cache-control', 'no-store');
+  // ?place=church lists church rooms; without it, temple rooms (what older clients expect)
+  const place = isPlace(req.query.place) ? req.query.place : 'pagoda';
   // own rooms are always fresh; others come from the shared directory
   const local = rooms.directory();
   const others = (await directory.list()).filter((r) => r.node !== config.nodeId);
-  return { rooms: [...local, ...others].sort((a, b) => a.num - b.num), node: config.nodeId };
+  const list = [...local, ...others].filter((r) => (r.place ?? 'pagoda') === place);
+  return { rooms: list.sort((a, b) => a.num - b.num), node: config.nodeId };
 });
 
 app.get('/metrics', async (req, reply) => {
@@ -149,7 +152,7 @@ function onConnection(ws: WebSocket, ip: string, params: URLSearchParams) {
     adj: num('a'),
     noun: num('n'),
     tint: num('c'),
-  });
+  }, isPlace(params.get('place')) ? (params.get('place') as Place) : 'pagoda');
   const release = () => {
     metrics.connections--;
     const n = (connPerIp.get(ip) ?? 1) - 1;

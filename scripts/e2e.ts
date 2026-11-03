@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { WebSocket } from 'ws';
-import { pavilion, type ServerMsg, type WelcomeMsg } from '@sontu/shared';
+import { CHURCH, CHURCH_CANDLES, CHURCH_SEATS, SEATS, pavilion, type RoomInfo, type ServerMsg, type WelcomeMsg } from '@sontu/shared';
 
 const PORT = 8799;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -229,6 +229,44 @@ try {
   check('bad hints are clamped / ignored', bp[3] <= 130 && bp[1] < 12);
   h.ws.close();
   bad.ws.close();
+
+  // ---- the church: its own rooms, layout and seats ----
+  const listOf = async (q: string) => ((await (await fetch(BASE + '/api/rooms' + q)).json()) as { rooms: RoomInfo[] }).rooms;
+  const templeRooms = await listOf('');
+  const churchRooms = await listOf('?place=church');
+  check('room list without ?place shows only temple rooms', templeRooms.length > 0 && templeRooms.every((r) => r.place === 'pagoda'), templeRooms);
+  check('?place=church lists church rooms', churchRooms.length > 0 && churchRooms.every((r) => r.place === 'church' && /-c\d+$/.test(r.id)), churchRooms);
+  const ch = await new Bot('?place=church&name=Ch').ready();
+  check('church visitor lands in a church room', /-c\d+$/.test(ch.hi.room.id) && Math.hypot(ch.hi.players.find((p) => p[0] === ch.hi.id)![3] - CHURCH.spawn.x, ch.hi.players.find((p) => p[0] === ch.hi.id)![4] - CHURCH.spawn.z) < 6);
+  check('church welcome has one queue per candle stand, no game tables', ch.hi.inc.length === CHURCH_CANDLES.length && ch.hi.tables.length === 0);
+  const pew = CHURCH_SEATS.length - 1;
+  ch.send({ t: 'seat', i: pew });
+  check('a church seat beyond the temple layout can be taken', !!(await ch.wait('seat', (m) => m.i === pew && m.id === ch.hi.id)) && pew !== SEATS.length - 1);
+  const stale = await new Bot(`?place=church&room=${encodeURIComponent(a.hi.room.id)}`).ready();
+  check('a temple room id is ignored when joining the church', /-c\d+$/.test(stale.hi.room.id));
+  ch.send({ t: 'inc', c: 2 });
+  check('church candle queue works', !!(await ch.wait('inc', (m) => m.c === 2 && m.s.cur === ch.hi.id)));
+  ch.send({ t: 'inc', c: CHURCH_CANDLES.length });
+  check('a candle stand index outside the church is ignored', !(await ch.wait('inc', (m) => m.c === CHURCH_CANDLES.length, 400)));
+  const templeSeen = await a.wait('s', (m) => !!m.j?.some((p) => p[0] === ch.hi.id), 400);
+  check('temple visitors do not see church visitors', !templeSeen);
+  ch.ws.close();
+  stale.ws.close();
+  // leaving the temple and entering the church with the same resume token: name kept, temple spot not
+  const tv = await new Bot('?name=Tv').ready();
+  tv.send({ t: 'mv', x: 0, z: -62, r: 0, p: 0 });
+  await sleep(200);
+  const tvMe = tv.hi.players.find((p) => p[0] === tv.hi.id)!;
+  tv.ws.close();
+  await sleep(200);
+  const tc = await new Bot(`?place=church&token=${tv.hi.token}`).ready();
+  const tcMe = tc.hi.players.find((p) => p[0] === tc.hi.id)!;
+  check(
+    'a temple session resumed in the church spawns at the church spawn (name kept)',
+    /-c\d+$/.test(tc.hi.room.id) && Math.hypot(tcMe[3] - CHURCH.spawn.x, tcMe[4] - CHURCH.spawn.z) < 6 && tcMe[1] === tvMe[1] && tcMe[2] === tvMe[2],
+    [tcMe, CHURCH.spawn],
+  );
+  tc.ws.close();
 
   // ---- private feedback ----
   const post = (body: unknown) => fetch(BASE + '/api/feedback', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
