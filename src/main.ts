@@ -1,5 +1,4 @@
 import Fastify from 'fastify';
-import fastifyStatic from '@fastify/static';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -103,6 +102,9 @@ const FRONTEND_CSP =
   "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
 
 if (config.staticDir && existsSync(config.staticDir)) {
+  // loaded only in single-binary mode: @fastify/static pulls in an ESM-only dependency through
+  // require(), which some runtimes (e.g. Vercel's) cannot load — so never at startup there
+  const { default: fastifyStatic } = await import('@fastify/static');
   await app.register(fastifyStatic, {
     root: resolve(config.staticDir),
     cacheControl: false,
