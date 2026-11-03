@@ -3,13 +3,28 @@
  *   npm run e2e -w backend
  */
 import { spawn } from 'node:child_process';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { WebSocket } from 'ws';
 import { pavilion, type ServerMsg, type WelcomeMsg } from '@sontu/shared';
 
 const PORT = 8799;
 const BASE = `http://127.0.0.1:${PORT}`;
+const FEEDBACK_FILE = `/tmp/sontu-e2e-feedback-${process.pid}.jsonl`;
+const ADMIN_KEY = 'e2e-admin-key';
+// seed: one entry past the retention window, one recent entry written by an older version (with personal data)
+mkdirSync(dirname(FEEDBACK_FILE), { recursive: true });
+writeFileSync(
+  FEEDBACK_FILE,
+  [
+    { at: new Date(Date.now() - 400 * 86_400_000).toISOString(), kind: 'bug', message: 'expired entry', locale: 'vi' },
+    { at: new Date(Date.now() - 86_400_000).toISOString(), kind: 'idea', message: 'legacy entry', name: 'Old Name', contact: 'old@example.com', locale: 'vi', ip: '203.0.113.7' },
+  ]
+    .map((e) => JSON.stringify(e) + '\n')
+    .join(''),
+);
 const server = spawn(process.execPath, ['--import', 'tsx', 'src/main.ts'], {
-  env: { ...process.env, PORT: String(PORT), ROOM_CAPACITY: '3', MIN_ROOMS: '1', LOG_LEVEL: 'warn', FEEDBACK_FILE: `/tmp/sontu-e2e-feedback-${process.pid}.jsonl` },
+  env: { ...process.env, PORT: String(PORT), ROOM_CAPACITY: '3', MIN_ROOMS: '1', LOG_LEVEL: 'warn', FEEDBACK_FILE, ADMIN_KEY },
   stdio: 'inherit',
 });
 
@@ -219,8 +234,21 @@ try {
   const post = (body: unknown) => fetch(BASE + '/api/feedback', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   check('feedback is accepted', (await post({ kind: 'idea', message: 'Thêm chức năng nghe pháp thoại\nnhé', name: 'Test', contact: 'a@b.c' })).status === 200);
   check('empty feedback is rejected', (await post({ kind: 'bug', message: '  ' })).status === 400);
-  const inbox = (await (await fetch(BASE + '/api/feedback')).json()) as { items: { message: string; kind: string }[] };
+  const inbox = (await (await fetch(BASE + '/api/feedback')).json()) as { items: Record<string, unknown>[] };
   check('feedback inbox readable from localhost (newlines kept)', inbox.items[0]?.message === 'Thêm chức năng nghe pháp thoại\nnhé' && inbox.items[0].kind === 'idea');
+  check('feedback entries hold no personal data', inbox.items.every((e) => Object.keys(e).sort().join() === 'at,kind,locale,message'), inbox.items);
+  const raw = readFileSync(FEEDBACK_FILE, 'utf8');
+  check('no name, contact or IP is written to disk', !/"(name|contact|ip)"|Old Name|old@example\.com|203\.0\.113\.7|a@b\.c/.test(raw), raw);
+  check('legacy entry kept but scrubbed', inbox.items.some((e) => e.message === 'legacy entry'));
+  check('entries past the retention window are deleted', !inbox.items.some((e) => e.message === 'expired entry') && !raw.includes('expired entry'));
+  const remote = { 'x-forwarded-for': '198.51.100.1' }; // not "local" any more
+  check('admin key in the URL is not accepted', (await fetch(`${BASE}/api/feedback?key=${ADMIN_KEY}`, { headers: remote })).status === 403);
+  check('admin key as a Bearer header is accepted', (await fetch(BASE + '/api/feedback', { headers: { ...remote, authorization: `Bearer ${ADMIN_KEY}` } })).status === 200);
+  const page = await fetch(BASE + '/admin/feedback', { headers: remote });
+  check('inbox page asks for a password', page.status === 401 && /^Basic /.test(page.headers.get('www-authenticate') ?? ''));
+  const basic = 'Basic ' + Buffer.from(`admin:${ADMIN_KEY}`).toString('base64');
+  check('inbox page opens with the key as Basic password', (await fetch(BASE + '/admin/feedback', { headers: { ...remote, authorization: basic } })).status === 200);
+  check('a wrong key is refused', (await fetch(BASE + '/api/feedback', { headers: { ...remote, authorization: 'Bearer nope' } })).status === 403);
   for (let i = 0; i < 5; i++) await post({ kind: 'other', message: 'spam ' + i });
   check('feedback is rate limited per IP', (await post({ kind: 'other', message: 'one more' })).status === 429);
 

@@ -49,6 +49,15 @@ docker compose up --build           # nginx :8080 + 2 nodes + redis
 | `ALLOWED_ORIGINS` | – | Comma-separated WebSocket origin allow-list |
 | `MAX_CONN_PER_IP` | 20 | Concurrent sockets per IP |
 | `TRUST_PROXY` | 0 | Set to 1 behind your own reverse proxy |
+| `ADMIN_KEY` | – | Key to read feedback from outside localhost (sent as a header, never in the URL) |
+| `FEEDBACK_FILE` | data/feedback.jsonl | Where feedback goes when Redis is not configured |
+
+## Privacy
+The server keeps no personal data.
+- **Feedback** (`POST /api/feedback`) stores only the kind, the message, the UI language and the time. No name, contact or IP address is stored, and entries older than 12 months are deleted. Entries from older versions are scrubbed of those fields automatically.
+- **Chat and display names** live in memory only: the last 40 messages per room, gone on restart.
+- **IP addresses** are used in memory to limit connections and feedback spam, and never written down. Request logs carry only the method and path.
+- **Reading feedback** from outside localhost needs `ADMIN_KEY`: `Authorization: Bearer <key>` for `/api/feedback`. `/admin/feedback` asks for a password in the browser (any user name, the key as password).
 
 ## Measured
 On one node, 2000 bots moving at 10 Hz split into 20 full rooms with 0 errors and 0 dropped messages. Each tick took ~30 ms of its 100 ms budget, and ping p95 was 81 ms.

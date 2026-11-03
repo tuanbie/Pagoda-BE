@@ -12,14 +12,30 @@ import { MemoryDirectory, type Directory } from './directory/Directory.ts';
 import { TokenBucket } from './net/TokenBucket.ts';
 import { registerFeedback } from './feedback/feedback.ts';
 
-const app = Fastify({ logger: { level: config.logLevel }, trustProxy: config.trustProxy });
+const app = Fastify({
+  logger: {
+    level: config.logLevel,
+    // No personal data in logs: Fastify's default request log carries the client IP and port,
+    // and query strings can carry tokens. Keep only the method and the path.
+    serializers: { req: (req: { method?: string; url?: string }) => ({ method: req.method, url: (req.url ?? '').split('?')[0] }) },
+  },
+  trustProxy: config.trustProxy,
+});
 const rooms = new RoomManager();
 
 let directory: Directory = new MemoryDirectory();
 if (config.redisUrl) {
   const { RedisDirectory } = await import('./directory/RedisDirectory.ts');
   directory = new RedisDirectory(config.redisUrl, config.nodeId);
-  app.log.info({ redis: config.redisUrl }, 'using redis room directory');
+  // host only: a Redis URL usually carries the password
+  const redisHost = (() => {
+    try {
+      return new URL(config.redisUrl).host;
+    } catch {
+      return 'configured';
+    }
+  })();
+  app.log.info({ redis: redisHost }, 'using redis room directory');
 }
 const publishDirectory = () =>
   directory.publish(rooms.directory()).catch((err) => app.log.warn({ err }, 'directory publish failed'));

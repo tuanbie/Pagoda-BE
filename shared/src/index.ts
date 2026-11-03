@@ -132,12 +132,13 @@ export interface TableSnap {
   g: GameState;
 }
 
-/** Private feedback to the developer (POST /api/feedback). */
+/**
+ * Private feedback to the developer (POST /api/feedback).
+ * Carries no personal data: no name, contact or IP address is sent or stored.
+ */
 export interface FeedbackInput {
   kind: 'bug' | 'idea' | 'other';
   message: string;
-  name?: string;
-  contact?: string;
   locale?: string;
 }
 export const FEEDBACK_MAX = 2000;
